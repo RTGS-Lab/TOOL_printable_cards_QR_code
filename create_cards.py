@@ -12,6 +12,7 @@ import jinja2
 def render_template(template_path, context):
     """
     Render a Jinja2 template with the given context.
+    Uses block_start_string, block_end_string, etc. to avoid conflicts with LaTeX syntax.
     
     Args:
         template_path (str): Path to the template file
@@ -23,12 +24,44 @@ def render_template(template_path, context):
     template_dir = os.path.dirname(template_path)
     template_file = os.path.basename(template_path)
     
-    # Set up Jinja2 environment
-    env = jinja2.Environment(loader=jinja2.FileSystemLoader(template_dir or './'))
-    template = env.get_template(template_file)
+    # Read the template file content
+    with open(template_path, 'r') as f:
+        template_content = f.read()
     
-    # Render the template
-    return template.render(**context)
+    # Set up Jinja2 environment with custom delimiters for LaTeX compatibility
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(template_dir or './'),
+        block_start_string='{% ',
+        block_end_string=' %}',
+        variable_start_string='{{',
+        variable_end_string='}}',
+        comment_start_string='{#',
+        comment_end_string='#}',
+        # Trim whitespace for better LaTeX output
+        trim_blocks=True,
+        lstrip_blocks=True,
+        autoescape=False  # Don't escape HTML - not needed for LaTeX
+    )
+    
+    # Get the template from the environment
+    try:
+        template = env.get_template(template_file)
+        return template.render(**context)
+    except Exception as e:
+        # Fallback to direct string template if loading fails
+        print(f"Warning: Using fallback template rendering method: {e}")
+        template = jinja2.Template(
+            template_content,
+            block_start_string='{% ',
+            block_end_string=' %}',
+            variable_start_string='{{',
+            variable_end_string='}}',
+            comment_start_string='{#',
+            comment_end_string='#}',
+            trim_blocks=True,
+            lstrip_blocks=True
+        )
+        return template.render(**context)
 
 
 def generate_latex(cards_dir, latex_template_path, output_pdf_path, qr_codes_dir):
@@ -118,16 +151,31 @@ def generate_latex(cards_dir, latex_template_path, output_pdf_path, qr_codes_dir
                         key, value = line.split(':', 1)
                         front_matter[key.strip()] = value.strip()
             
+            # Get QR code path
+            qr_filename = front_matter.get('qr_code_filename', '')
+            qr_path = os.path.join(qr_codes_dir, qr_filename)
+            
+            # Check if QR code exists; use placeholder if it doesn't
+            if not os.path.exists(qr_path):
+                print(f"⚠️ QR code image not found: {qr_path}")
+                qr_path = qr_filename  # Just use the filename and let LaTeX handle missing files
+
+            # Clean text fields by removing pipe characters from YAML block style
+            def clean_text(text):
+                if text:
+                    return text.replace('|', '').strip()
+                return ''
+
             # Create card data structure
             card_data = {
                 'title': front_matter.get('title', f"Card {card_file}"),
                 'contact': front_matter.get('contact', ''),
-                'description': front_matter.get('description', '').replace('|', '').strip(),
+                'description': clean_text(front_matter.get('description', '')),
                 'funders': front_matter.get('funders', ''),
                 'feasible_3yr': front_matter.get('feasible_3yr', ''),
-                'opportunities': front_matter.get('opportunities', '').replace('|', '').strip(),
-                'challenges': front_matter.get('challenges', '').replace('|', '').strip(),
-                'qr_code': os.path.join(qr_codes_dir, front_matter.get('qr_code_filename', ''))
+                'opportunities': clean_text(front_matter.get('opportunities', '')),
+                'challenges': clean_text(front_matter.get('challenges', '')),
+                'qr_code': qr_path
             }
             
             cards_data.append(card_data)
@@ -154,14 +202,73 @@ def generate_latex(cards_dir, latex_template_path, output_pdf_path, qr_codes_dir
             subprocess.run(['pandoc', '--version'], check=True, capture_output=True)
             
             # Run pandoc
-            pandoc_cmd = [
-                'pandoc', 
-                latex_output_path, 
-                '-o', output_pdf_path,
-                '--pdf-engine=xelatex'
-            ]
+            print(f"Running pandoc to generate PDF...")
             
-            subprocess.run(pandoc_cmd, check=True)
+            # First, try using pdflatex directly for better error messages
+            try:
+                print("Trying direct LaTeX compilation first...")
+                latex_cmd = ['pdflatex', '-interaction=nonstopmode', '-output-directory', os.path.dirname(output_pdf_path), latex_output_path]
+                latex_result = subprocess.run(latex_cmd, check=False, capture_output=True, text=True)
+                
+                # If successful, we'll have a PDF with the same base name as the .tex file
+                pdf_from_latex = os.path.splitext(latex_output_path)[0] + '.pdf'
+                if os.path.exists(pdf_from_latex):
+                    # Rename to the desired output path if they're different
+                    if pdf_from_latex != output_pdf_path:
+                        shutil.move(pdf_from_latex, output_pdf_path)
+                    print(f"✅ Generated PDF file with pdflatex: {output_pdf_path}")
+                    return True
+                else:
+                    # Print LaTeX errors for debugging
+                    if latex_result.stderr:
+                        print(f"LaTeX errors: {latex_result.stderr}")
+                    print("Direct LaTeX compilation failed, trying pandoc...")
+            except Exception as e:
+                print(f"LaTeX compilation attempt failed: {e}")
+                print("Falling back to pandoc...")
+            
+            # Fall back to pandoc if direct LaTeX compilation failed
+            try:
+                pandoc_cmd = [
+                    'pandoc', 
+                    latex_output_path, 
+                    '-o', output_pdf_path,
+                    '--pdf-engine=xelatex'
+                ]
+                
+                # Execute pandoc with verbose output
+                result = subprocess.run(pandoc_cmd, check=False, capture_output=True, text=True)
+                
+                # Check if the PDF was created
+                if os.path.exists(output_pdf_path):
+                    print(f"✅ Generated PDF file with pandoc: {output_pdf_path}")
+                    return True
+                
+                # Print stdout if available
+                if result.stdout:
+                    print(f"Pandoc output: {result.stdout}")
+                    
+                # Print any errors
+                if result.stderr:
+                    print(f"Pandoc warnings/errors: {result.stderr}")
+                    
+                # If we've reached here, both methods failed
+                print("❌ PDF generation failed with both LaTeX and pandoc.")
+                print("The LaTeX file was generated successfully and is available at:")
+                print(f"  {latex_output_path}")
+                print("You can try to compile it manually with: pdflatex -interaction=nonstopmode", latex_output_path)
+                return False
+                
+            except FileNotFoundError:
+                print("❌ Error: pandoc not found. Please install pandoc to generate PDFs.")
+                print("The LaTeX file was generated successfully and is available at:")
+                print(f"  {latex_output_path}")
+                return False
+            except Exception as e:
+                print(f"❌ Error running pandoc: {e}")
+                print("The LaTeX file was generated successfully and is available at:")
+                print(f"  {latex_output_path}")
+                return False
             print(f"✅ Generated PDF file: {output_pdf_path}")
             
         except FileNotFoundError:

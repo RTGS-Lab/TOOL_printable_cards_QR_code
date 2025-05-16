@@ -81,8 +81,19 @@ python main.py --input your_data.csv \
                --card-template card_template.md \
                --output-dir output \
                --qr-dir qr_codes \
-               --zoom 18
+               --zoom 18 \
+               --use-mapping \
+               --skip-pdf
 ```
+
+Options explained:
+- `--input, -i`: Path to the input CSV file
+- `--card-template`: Path to the card markdown template (default: card_template.md)
+- `--output-dir`: Directory for all output files (default: output)
+- `--qr-dir`: Directory for QR code images (default: qr_codes)
+- `--zoom`: Zoom level for Google Maps URLs (default: 18)
+- `--use-mapping`: Use header_mapping.json to map CSV headers
+- `--skip-pdf`: Skip PDF generation step (useful if pandoc is not installed)
 
 ### Input CSV Format
 
@@ -179,12 +190,34 @@ The template uses Jinja2 syntax for variables and loops:
 
 ### PDF Generation
 
-If PDF generation fails, check if pandoc is installed:
-```bash
-pandoc --version
-```
+If PDF generation fails or is skipped, there are several options:
 
-If not installed, follow the installation instructions in the Installation section.
+1. **Check if pandoc is installed**:
+   ```bash
+   pandoc --version
+   ```
+   If not installed, follow the installation instructions in the Installation section.
+
+2. **Check if LaTeX is installed**:
+   Pandoc requires a LaTeX distribution to generate PDFs. Install one of these:
+   - macOS: `brew install --cask mactex-no-gui` or `brew install --cask basictex`
+   - Ubuntu/Debian: `sudo apt-get install texlive-xetex`
+   - Windows: Install MiKTeX or TeX Live
+
+3. **Skip PDF generation**:
+   If you don't want to install pandoc or LaTeX, use the `--skip-pdf` flag:
+   ```bash
+   python main.py --input your_data.csv --skip-pdf
+   ```
+
+4. **Generate PDF separately**:
+   After running the main script with `--skip-pdf`, you can generate PDFs manually:
+   ```bash
+   python create_cards.py --cards-dir output/cards --output-pdf output/printable_cards.pdf
+   ```
+
+5. **Alternative PDF generation**:
+   You can also use other tools to generate PDFs from the markdown or LaTeX files in the output directory.
 
 ### QR Code Generation
 
@@ -195,7 +228,30 @@ pip install qrcode[pil] Pillow
 
 ### CSV Format Issues
 
-If the script reports missing headers, ensure your CSV contains all required columns and that the headers match exactly as specified.
+If the script reports missing headers, you have several options:
+
+1. Modify your CSV file to use the exact header names required by the tool.
+
+2. Use the header mapping feature:
+   - When the script detects missing headers, it will offer to create a mapping file
+   - Follow the prompts to map your existing headers to the required ones
+   - Run the script again with the `--use-mapping` flag:
+   ```bash
+   python main.py --input your_data.csv --use-mapping
+   ```
+
+3. The tool also automatically handles minor differences like trailing spaces or case changes.
+
+**Example mapping process:**
+```
+❌ CSV is missing required headers: Describe the opportunity
+Would you like to create a header mapping file to resolve this issue? (y/n)
+y
+Enter the corresponding header in your CSV for 'Describe the opportunity' (or leave blank to skip):
+Describe the opportunity 
+✅ Header mapping saved to 'header_mapping.json'
+Run the script again with the --use-mapping flag to use this mapping
+```
 
 ## License
 

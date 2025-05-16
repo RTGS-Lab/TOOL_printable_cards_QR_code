@@ -31,6 +31,10 @@ output/
 *.pdf
 *_with_links.csv
 qr_metadata.csv
+header_mapping.json
+temp_mapped.csv
+template_input.csv
+qr_codes/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -63,3 +67,5 @@ qr_metadata.csv
 *.ps
 *.eps
 *.tex
+
+

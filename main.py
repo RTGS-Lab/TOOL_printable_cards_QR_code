@@ -55,6 +55,7 @@ def check_file_exists(file_path, template_content=None, description=None):
 def validate_csv_headers(csv_path, required_headers):
     """
     Validate that a CSV file contains the required headers.
+    Performs fuzzy matching with CSV headers to account for minor differences like trailing spaces.
     
     Args:
         csv_path (str): Path to the CSV file
@@ -62,26 +63,70 @@ def validate_csv_headers(csv_path, required_headers):
     
     Returns:
         bool: True if all required headers are present, False otherwise
+        dict: Mapping of actual headers to required headers
     """
     try:
         df = pd.read_csv(csv_path)
-        missing_headers = [h for h in required_headers if h not in df.columns]
+        actual_headers = df.columns.tolist()
+        
+        # Create header mapping (handling minor differences like spaces)
+        header_mapping = {}
+        for required in required_headers:
+            # Try exact match first
+            if required in actual_headers:
+                header_mapping[required] = required
+                continue
+                
+            # Try case-insensitive match
+            for actual in actual_headers:
+                if required.lower() == actual.lower():
+                    header_mapping[actual] = required
+                    break
+                    
+            # Try match ignoring whitespace
+            if required not in header_mapping.values():
+                for actual in actual_headers:
+                    if required.strip() == actual.strip():
+                        header_mapping[actual] = required
+                        break
+        
+        # Find missing headers
+        missing_headers = [h for h in required_headers if h not in header_mapping.values()]
         
         if missing_headers:
             print(f"❌ CSV is missing required headers: {', '.join(missing_headers)}")
             print("Required headers are: " + ", ".join(required_headers))
+            
             # Create a template CSV with the required headers
             template_df = pd.DataFrame(columns=required_headers)
             template_path = "template_input.csv"
             template_df.to_csv(template_path, index=False)
             print(f"✅ Created a template CSV at: {template_path}")
-            return False
+            
+            # Show potential mapping if headers look similar
+            if len(missing_headers) < len(required_headers):
+                print("\nHeader mapping found for some columns:")
+                for actual, required in header_mapping.items():
+                    print(f"  '{actual}' → '{required}'")
+                    
+                print("\nMissing headers that need mapping:")
+                for header in missing_headers:
+                    print(f"  '{header}'")
+                
+            return False, header_mapping
         
-        return True
+        print("✅ All required headers found in CSV")
+        if any(key != value for key, value in header_mapping.items()):
+            print("ℹ️ Some headers were automatically mapped:")
+            for actual, required in header_mapping.items():
+                if actual != required:
+                    print(f"  '{actual}' → '{required}'")
+        
+        return True, header_mapping
     
     except Exception as e:
         print(f"❌ Error validating CSV headers: {e}")
-        return False
+        return False, {}
 
 
 def create_qr_codes(input_csv, qr_dir, weblinks_csv):
@@ -226,6 +271,8 @@ All options:
   --output-dir      Directory for output files (default: output)
   --qr-dir          Directory for QR code images (default: qr_codes)
   --zoom            Zoom level for Google Maps URLs (default: 18)
+  --use-mapping     Use header_mapping.json file to map CSV headers
+  --skip-pdf        Skip PDF generation step (if pandoc is not installed)
 
 For more information, see README.md
 """
@@ -249,6 +296,10 @@ def main():
                         help='Directory for QR code images')
     parser.add_argument('--zoom', type=int, default=18,
                         help='Zoom level for Google Maps URLs (default: 18)')
+    parser.add_argument('--use-mapping', action='store_true',
+                        help='Use header mapping file (header_mapping.json) to map CSV headers')
+    parser.add_argument('--skip-pdf', action='store_true',
+                        help='Skip PDF generation step (useful if pandoc is not installed)')
     
     args = parser.parse_args()
     
@@ -267,8 +318,71 @@ def main():
                        'What do you expect would go smoothly?', 'What would you expect to be challenging?',
                        'Who might be a potential funder of this work?', 'x', 'y']
     
-    if not validate_csv_headers(args.input, required_headers):
-        return False
+    # Check if we should use a header mapping file
+    if args.use_mapping:
+        try:
+            import json
+            with open('header_mapping.json', 'r') as f:
+                header_mapping_file = json.load(f)
+            print(f"✅ Loaded header mapping from 'header_mapping.json'")
+            
+            # Create a temporary CSV with correct headers
+            df = pd.read_csv(args.input)
+            
+            # Rename columns according to the mapping
+            for original, target in header_mapping_file.items():
+                if original in df.columns:
+                    df.rename(columns={original: target}, inplace=True)
+            
+            # Save to a temporary file
+            temp_csv = 'temp_mapped.csv'
+            df.to_csv(temp_csv, index=False)
+            
+            # Update input file path
+            args.input = temp_csv
+            print(f"✅ Created mapped CSV with correct headers at '{temp_csv}'")
+            
+            # Run validation again on the mapped file
+            headers_valid, header_mapping = validate_csv_headers(args.input, required_headers)
+            if not headers_valid:
+                print("❌ Even with mapping, some required headers are still missing.")
+                return False
+                
+        except FileNotFoundError:
+            print("❌ Header mapping file 'header_mapping.json' not found.")
+            print("   Run the script without --use-mapping first to create the mapping file.")
+            return False
+        except Exception as e:
+            print(f"❌ Error using header mapping: {e}")
+            return False
+    else:
+        # Normal validation without mapping
+        headers_valid, header_mapping = validate_csv_headers(args.input, required_headers)
+        if not headers_valid:
+            # Option to create a mapping file
+            print("\nWould you like to create a header mapping file to resolve this issue? (y/n)")
+            choice = input().lower()
+            if choice == 'y':
+                mapping_content = {}
+                for header in required_headers:
+                    if header not in header_mapping.values():
+                        print(f"Enter the corresponding header in your CSV for '{header}' (or leave blank to skip):")
+                        mapping = input().strip()
+                        if mapping:
+                            mapping_content[mapping] = header
+                
+                # Add already mapped headers
+                for actual, req in header_mapping.items():
+                    mapping_content[actual] = req
+                    
+                # Save mapping to a json file
+                import json
+                with open('header_mapping.json', 'w') as f:
+                    json.dump(mapping_content, f, indent=2)
+                print("✅ Header mapping saved to 'header_mapping.json'")
+                print("Run the script again with the --use-mapping flag to use this mapping")
+            
+            return False
     
     # 3. Create links to web resource
     weblinks_csv = create_weblinks.process_csv(args.input, None, args.zoom)
@@ -284,9 +398,59 @@ def main():
     if not create_card_markdown_files(args.input, weblinks_csv, args.qr_dir, args.card_template, cards_dir):
         return False
     
-    print(f"✅ Workflow completed successfully!")
+    # 6. Generate the final PDF using create_cards.py
+    output_pdf_path = os.path.join(args.output_dir, 'printable_cards.pdf')
+    
+    if args.skip_pdf:
+        print("\n⚠️ Skipping PDF generation as requested.")
+        print(f"To generate PDF manually, run:")
+        print(f"  python create_cards.py --cards-dir {cards_dir} --output-pdf {output_pdf_path}")
+    else:
+        print("\nGenerating printable PDF from cards...")
+        
+        # Check if pandoc is installed
+        pandoc_available = False
+        try:
+            result = subprocess.run(['pandoc', '--version'], 
+                                   check=False, 
+                                   capture_output=True, 
+                                   text=True)
+            pandoc_available = result.returncode == 0
+        except:
+            pandoc_available = False
+            
+        if not pandoc_available:
+            print("⚠️ Pandoc is not installed. PDF generation will be skipped.")
+            print("To install pandoc:")
+            print("  - macOS: brew install pandoc")
+            print("  - Ubuntu/Debian: sudo apt-get install pandoc")
+            print("  - Windows: choco install pandoc")
+            print("\nTo generate PDF after installing pandoc, run:")
+            print(f"  python create_cards.py --cards-dir {cards_dir} --output-pdf {output_pdf_path}")
+        else:
+            try:
+                # Import the module
+                import create_cards
+                
+                # Set up the LaTeX template path
+                latex_template_path = "layout_template.tex"
+                
+                # Run the card generation process
+                if create_cards.generate_latex(cards_dir, latex_template_path, output_pdf_path, args.qr_dir):
+                    print(f"✅ PDF generation process completed.")
+                else:
+                    print(f"⚠️ PDF generation did not complete successfully.")
+                    print(f"You can manually run: python create_cards.py --cards-dir {cards_dir} --output-pdf {output_pdf_path}")
+            except Exception as e:
+                print(f"❌ Error generating PDF: {e}")
+                print(f"You can manually run: python create_cards.py --cards-dir {cards_dir} --output-pdf {output_pdf_path}")
+    
+    print(f"\n✅ Workflow completed successfully!")
     print(f"Output files are in: {args.output_dir}")
     print(f"QR codes are in: {args.qr_dir}")
+    print(f"Card markdown files are in: {cards_dir}")
+    if os.path.exists(output_pdf_path):
+        print(f"Printable PDF: {output_pdf_path}")
     
     return True
 
